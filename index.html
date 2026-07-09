@@ -769,6 +769,33 @@ svg.leaflet-image-layer.leaflet-interactive path {
   .qa-stat .ql{font-size:12px;color:var(--muted);line-height:1.4;}
   .qa-stat.warn .qv{color:var(--red);}
   @media (max-width:1100px){.grid2,.grid3{grid-template-columns:1fr;}}
+
+  /* ============ CM Process Timeline ============ */
+  .tl-card{margin-bottom:16px;}
+  .tl-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;}
+  .tl-phase-label{font-size:13px;font-weight:700;color:var(--navy-dark);}
+  .tl-pct{font-size:20px;font-weight:700;color:var(--navy);}
+  .tl-bar{display:flex;gap:3px;height:18px;border-radius:9px;overflow:hidden;margin-bottom:14px;}
+  .tl-seg{flex:1;background:#e3e8ec;position:relative;transition:opacity .15s;}
+  .tl-seg.cur{background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.45) 0 5px,transparent 5px 10px);}
+  .tl-seg:hover{opacity:.8;}
+  .tl-steps{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;}
+  .tl-step{font-size:11px;line-height:1.35;padding:8px 7px 7px;border-radius:8px;border:1px solid var(--border);background:#fbfcfd;}
+  .tl-step .tl-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;background:#cfd8de;vertical-align:middle;}
+  .tl-step .tl-name{font-weight:700;color:var(--navy-dark);display:block;margin-bottom:2px;}
+  .tl-step .tl-date{color:var(--muted);display:block;font-size:10.5px;}
+  .tl-step.done{background:#f2f9fb;}
+  .tl-step.cur{border-color:var(--teal);box-shadow:0 0 0 1px var(--teal) inset;background:#eefcff;}
+  .tl-step.pending{opacity:.55;}
+  .tl-note{font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5;}
+  .tl-mini-row{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;cursor:pointer;}
+  .tl-mini-row:hover{background:#eef4f7;}
+  .tl-mini-label{flex:0 0 300px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .tl-mini-label b{color:var(--navy-dark);}
+  .tl-mini-bar{flex:1;display:flex;gap:2px;height:12px;border-radius:6px;overflow:hidden;}
+  .tl-mini-phase{flex:0 0 215px;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .tl-mini-pct{flex:0 0 44px;text-align:right;font-size:12px;font-weight:700;color:var(--navy);}
+  @media (max-width:1100px){.tl-steps{grid-template-columns:repeat(4,1fr);} .tl-mini-label{flex-basis:170px;} .tl-mini-phase{display:none;}}
 </style>
 </head>
 <body>
@@ -801,6 +828,16 @@ svg.leaflet-image-layer.leaflet-interactive path {
   <div class="kpis" id="kpis"></div>
 
   <div id="flagsSection"></div>
+
+  <div id="timelineSection"></div>
+
+  <div class="card tl-card" id="financePieCard" style="display:none;">
+    <h2>💰 Contract Value by CM Phase</h2>
+    <div class="sub" id="financePieSub"></div>
+    <div class="chart-box" style="height:300px;position:relative;"><canvas id="financePieChart"></canvas></div>
+    <div class="empty-state" id="financePieEmpty" style="display:none;">No contract amount recorded for this contract in the source data.</div>
+    <div class="tl-note">Illustrative allocation of the awarded contract amount across the 8 CM phases (construction carries most of the value). Solid slices = phases complete, semi-transparent slice = phase in progress, gray = not yet reached — each phase has its own distinct color. No payment/billing records exist in the source data, so slice dollars are estimates tied to phase progress, not invoiced amounts.</div>
+  </div>
 
   <div class="grid3">
     <div class="card">
@@ -1737,6 +1774,152 @@ function renderFlagsProject(p){
   </div>`;
 }
 
+// ============ CM Process Timeline (per Construction Section CM procedure, 6/22/2026 draft) ============
+// Eight milestones mapped from the Construction Project Management process document:
+// 1 Plans/Specs review -> 2 RCA -> 3 Executed contract & NTP -> 4 Pre-con meeting ->
+// 5 Mobilization -> 6 Construction progress -> 7 Pre-final/Final inspections -> 8 Close out.
+const CM_PHASES = [
+  {name:'Plans & Specs Review',      desc:'Pre-bid review · WO/PR/PO secured · HeadLight & eBuilder project setup'},
+  {name:'RCA / Contract Award',      desc:'Recommendation for Contract Award filed in 03 Correspondence · CM & contractor added in eBuilder'},
+  {name:'Executed Contract & NTP',   desc:'Executed contract letter · schedule of submittals · NTP letter signed'},
+  {name:'Pre-Construction Meeting',  desc:'Pre-con with CM, inspector, contractor & District · agenda, CPM schedule, BMP plan'},
+  {name:'Mobilization',              desc:'HeadLight mobilization inspection · existing-condition photos'},
+  {name:'Construction Progress',     desc:'Weekly meetings · change orders · monthly billing · daily inspections · certified payroll'},
+  {name:'Pre-Final & Final Inspections', desc:'Punch list · as-builts · close-out docs · final acceptance letter'},
+  {name:'Project Close Out',         desc:'Final billing & retention release · archive to SharePoint · eBuilder status Closed'},
+];
+const CLOSEOUT_LAG_DAYS = 90; // assume close-out/archival finishes ~90 days after final acceptance
+
+// Gradient: lighter at the start, darker toward the end.
+function phaseColor(i){
+  const s=[127,212,224], e=[7,43,65], t=i/(CM_PHASES.length-1);
+  return 'rgb('+s.map((v,k)=>Math.round(v+(e[k]-v)*t)).join(',')+')';
+}
+
+// Infer each milestone's status from the data we have (transmittal, NTP, field activity, completion).
+function computePhases(p){
+  const snap = SNAPSHOT_DATE;
+  const hasAward = !!p.transmittalDate || !!p.ntpDate;
+  const hasNtp = !!p.ntpDate && p.ntpDate <= snap;
+  const mobilized = hasNtp && !!p.firstDate;
+  const closedOut = p.completed && p.completionDate && daysBetween(p.completionDate, snap) > CLOSEOUT_LAG_DAYS;
+  const st = [];
+  st[0] = 'done';                                                        // in HeadLight => plans/specs reviewed
+  st[1] = hasAward ? 'done' : 'cur';                                     // RCA / award
+  st[2] = hasNtp ? 'done' : (hasAward ? 'cur' : 'pending');              // executed contract & NTP
+  st[3] = hasNtp ? 'done' : 'pending';                                   // pre-con (held around NTP)
+  st[4] = mobilized ? 'done' : (hasNtp ? 'cur' : 'pending');             // mobilization
+  st[5] = p.completed ? 'done' : (mobilized ? 'cur' : 'pending');        // construction progress
+  st[6] = p.completed ? 'done' : 'pending';                              // pre-final & final inspections
+  st[7] = p.completed ? (closedOut ? 'done' : 'cur') : 'pending';        // close out
+  const done = st.filter(s=>s==='done').length, cur = st.filter(s=>s==='cur').length;
+  const pct = Math.round((done + 0.5*cur) / CM_PHASES.length * 100);
+  let curIdx = st.indexOf('cur');
+  if (curIdx === -1) curIdx = done - 1; // fully closed out
+  return {st, pct, curIdx};
+}
+
+function phaseDates(p){
+  return [
+    'Before bid',
+    p.transmittalDate ? 'Award recommended' : 'RCA on file',
+    p.ntpDate ? 'NTP ' + p.ntpDate : (p.transmittalDate ? 'Transmittal ' + p.transmittalDate : 'Pending'),
+    p.ntpDate ? '~' + p.ntpDate : 'Pending',
+    p.firstDate ? 'First field activity ' + p.firstDate : 'Pending',
+    p.completed ? 'Through ' + (p.lastDate || p.completionDate) : (p.lastDate ? 'Latest activity ' + p.lastDate : 'Pending'),
+    p.completed ? 'Final acceptance ' + p.completionDate : 'Pending',
+    p.completed ? (daysBetween(p.completionDate, SNAPSHOT_DATE) > CLOSEOUT_LAG_DAYS ? 'Archived' : 'In progress') : 'Pending',
+  ];
+}
+
+function tlBarHtml(st, mini){
+  return CM_PHASES.map((ph,i)=>{
+    const s = st[i];
+    const bg = s==='pending' ? '' : 'background-color:'+phaseColor(i)+';';
+    return '<div class="tl-seg '+(s==='cur'?'cur':'')+'" style="'+bg+'" title="'+(i+1)+'. '+ph.name+'"></div>';
+  }).join('');
+}
+
+function renderTimelineProject(p){
+  const {st, pct, curIdx} = computePhases(p);
+  const dates = phaseDates(p);
+  const steps = CM_PHASES.map((ph,i)=>{
+    const s = st[i];
+    const dot = s==='pending' ? '' : 'background:'+phaseColor(i)+';';
+    const mark = s==='done' ? '✓ ' : (s==='cur' ? '▶ ' : '');
+    return '<div class="tl-step '+(s==='cur'?'cur':s)+'" title="'+ph.desc+'">'+
+      '<span class="tl-dot" style="'+dot+'"></span>'+
+      '<span class="tl-name">'+(i+1)+'. '+ph.name+'</span>'+
+      '<span class="tl-date">'+mark+dates[i]+'</span></div>';
+  }).join('');
+  document.getElementById('timelineSection').innerHTML = '<div class="card tl-card">'+
+    '<h2>🗓️ Project Status — CM Process Timeline</h2>'+
+    '<div class="sub">Milestones per the Construction Section CM procedure · phase inferred from contract & field-data dates</div>'+
+    '<div class="tl-head"><div class="tl-phase-label">Phase '+(curIdx+1)+' of '+CM_PHASES.length+': '+CM_PHASES[curIdx].name+'</div>'+
+    '<div class="tl-pct">'+pct+'% complete</div></div>'+
+    '<div class="tl-bar">'+tlBarHtml(st)+'</div>'+
+    '<div class="tl-steps">'+steps+'</div>'+
+    '<div class="tl-note">Bar segments darken as the project advances through the CM process. Statuses are inferred: award from the contract transmittal, pre-con/mobilization from NTP and first field activity, completion from the Final Acceptance Letter; close-out is assumed complete ~'+CLOSEOUT_LAG_DAYS+' days after final acceptance. Striped segment = phase in progress.</div>'+
+    '</div>';
+}
+
+function renderTimelineOverview(){
+  const rows = overviewContracts().slice().sort((a,b)=>computePhases(a).pct-computePhases(b).pct || a.jobnum.localeCompare(b.jobnum));
+  const html = rows.map(p=>{
+    const {st, pct, curIdx} = computePhases(p);
+    return '<div class="tl-mini-row" onclick="switchView(\''+p.pid+'\')" title="'+p.title+'">'+
+      '<div class="tl-mini-label"><b>'+p.jobnum+'</b> — '+p.title+'</div>'+
+      '<div class="tl-mini-bar">'+tlBarHtml(st)+'</div>'+
+      '<div class="tl-mini-phase">Phase '+(curIdx+1)+': '+CM_PHASES[curIdx].name+'</div>'+
+      '<div class="tl-mini-pct">'+pct+'%</div></div>';
+  }).join('');
+  document.getElementById('timelineSection').innerHTML = '<div class="card tl-card">'+
+    '<h2>🗓️ Project Status — CM Process Timeline</h2>'+
+    '<div class="sub">Each contract\'s progress through the 8-phase CM procedure (lighter = early phases, darker = later) · sorted least-to-most complete · click a row for its full timeline</div>'+
+    html + '</div>';
+}
+
+// ============ Finance pie: contract value split across CM phases ============
+// Illustrative cost weights per phase — construction carries most of a contract's value.
+const PHASE_COST_WEIGHTS = [0.02, 0.02, 0.03, 0.03, 0.10, 0.65, 0.10, 0.05];
+// Distinct color per phase (colorblind-friendly palette) for the finance pie.
+const PHASE_PIE_COLORS = ['#4e79a7','#f28e2b','#59a14f','#e15759','#b07aa1','#1b9aaa','#edc949','#9c755f'];
+
+function renderFinancePie(p){
+  const {st} = computePhases(p);
+  const sub = document.getElementById('financePieSub');
+  const canvas = document.getElementById('financePieChart');
+  const empty = document.getElementById('financePieEmpty');
+  if (!p.contractAmount){
+    canvas.parentElement.style.display = 'none';
+    empty.style.display = 'block';
+    sub.textContent = p.jobnum + ' · no contract amount on file';
+    return;
+  }
+  canvas.parentElement.style.display = '';
+  empty.style.display = 'none';
+  const earned = Math.round(CM_PHASES.reduce((s,ph,i)=> s + (st[i]==='done' ? PHASE_COST_WEIGHTS[i] : (st[i]==='cur' ? PHASE_COST_WEIGHTS[i]/2 : 0)), 0) * p.contractAmount);
+  sub.textContent = p.jobnum + ' · $' + fmt(p.contractAmount) + ' awarded · est. $' + fmt(earned) + ' earned through completed phases';
+  const colors = CM_PHASES.map((ph,i)=>
+    st[i]==='done' ? PHASE_PIE_COLORS[i]
+    : (st[i]==='cur' ? PHASE_PIE_COLORS[i]+'73' : '#e6ebef'));
+  charts.cFin = new Chart(canvas, {
+    type:'pie',
+    data:{
+      labels: CM_PHASES.map((ph,i)=>(i+1)+'. '+ph.name),
+      datasets:[{ data: PHASE_COST_WEIGHTS.map(w=>Math.round(p.contractAmount*w)), backgroundColor: colors, borderColor:'#fff', borderWidth:2 }]
+    },
+    options:{responsive:true,maintainAspectRatio:false,plugins:{
+      legend:{position:'right',labels:{boxWidth:12,font:{size:11}}},
+      tooltip:{callbacks:{label:(ctx)=>{
+        const i = ctx.dataIndex;
+        const s = st[i]==='done' ? 'Complete' : (st[i]==='cur' ? 'In progress' : 'Not started');
+        return ' $'+fmt(ctx.parsed)+' ('+Math.round(PHASE_COST_WEIGHTS[i]*100)+'% of contract) · '+s;
+      }}}
+    }}
+  });
+}
+
 // ============ View switching ============
 let currentPid = null;
 function refreshOverview(){
@@ -1744,6 +1927,7 @@ function refreshOverview(){
   document.getElementById('viewHeading').innerHTML = `<div class="view-title">Portfolio Overview</div><div class="view-sub">Showing ${contracts.length} of ${CONTRACTS.length} harbor repair contracts, summer 2026 internship program</div>`;
   renderKpisOverview();
   renderFlagsOverview();
+  renderTimelineOverview();
   destroyCharts();
   renderChartsOverview();
   renderTable();
@@ -1755,6 +1939,7 @@ function switchView(val){
   document.getElementById('globalFilters').style.display = currentPid ? 'none' : 'flex';
   document.getElementById('portfolioOnlyFinancials').style.display = currentPid ? 'none' : 'grid';
   document.getElementById('portfolioOnlySchedule').style.display = currentPid ? 'none' : 'grid';
+  document.getElementById('financePieCard').style.display = currentPid ? '' : 'none';
   destroyCharts();
   if (!currentPid){
     refreshOverview();
@@ -1763,6 +1948,8 @@ function switchView(val){
     document.getElementById('viewHeading').innerHTML = `<div class="view-title">${p.jobnum} — ${p.title}</div><div class="view-sub">${p.harbor}, ${p.island} · ${p.program}</div>`;
     renderKpisProject(p);
     renderFlagsProject(p);
+    renderTimelineProject(p);
+    renderFinancePie(p);
     renderChartsProject(p);
     renderTable();
   }
