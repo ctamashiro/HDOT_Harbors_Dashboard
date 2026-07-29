@@ -2,7 +2,7 @@ HDOT Harbors Division — Pavement & Substructure Repairs Dashboard
 
 Interactive portfolio dashboard for the Hawaii Department of Transportation, Harbors Division construction program: 26 pavement and substructure repair contracts across Oahu, Maui, Hawaiʻi Island, Kauaʻi, Molokaʻi, and Lānaʻi.
 
-Live dashboard: https://ctamashiro.github.io/hdot-harbors-dashboard/ ](https://ctamashiro.github.io/HDOT_Harbors_Dashboard/
+Live dashboard: https://ctamashiro.github.io/HDOT_Harbors_Dashboard/
 
 What's inside
 Portfolio overview — KPIs, priority flags, activity by island, program split, awarded value, and schedule performance across all contracts
